@@ -186,7 +186,7 @@ extension NIOSSHPublicKey {
 }
 
 extension NIOSSHPublicKey {
-    var base64Encoded: String {
+    public var base64Encoded: String {
         switch backingKey {
         case .ed25519(let key):
             return key.rawRepresentation.base64EncodedString()
