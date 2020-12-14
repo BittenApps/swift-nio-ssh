@@ -185,6 +185,23 @@ extension NIOSSHPublicKey {
     }
 }
 
+extension NIOSSHPublicKey {
+    var base64Encoded: String {
+        switch backingKey {
+        case .ed25519(let key):
+            return key.rawRepresentation.base64EncodedString()
+        case .ecdsaP256(let key):
+            return key.rawRepresentation.base64EncodedString()
+        case .ecdsaP384(let key):
+            return key.rawRepresentation.base64EncodedString()
+        case .ecdsaP521(let key):
+            return key.rawRepresentation.base64EncodedString()
+        case .certified(let certified):
+            return certified.key.base64Encoded
+        }
+    }
+}
+
 extension NIOSSHPublicKey.BackingKey: Equatable {
     static func == (lhs: NIOSSHPublicKey.BackingKey, rhs: NIOSSHPublicKey.BackingKey) -> Bool {
         // We implement equatable in terms of the key representation.
