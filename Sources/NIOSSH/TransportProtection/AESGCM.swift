@@ -98,7 +98,7 @@ extension AESGCMTransportProtection: NIOSSHTransportProtection {
             let sealedBox = try AES.GCM.SealedBox(nonce: AES.GCM.Nonce(data: self.inboundNonce), ciphertext: ciphertextView, tag: tagView)
             plaintext = try AES.GCM.open(sealedBox, using: self.inboundEncryptionKey, authenticating: lengthView)
 
-            // All good! A quick sanity check to verify that the length of the plaintext is ok.
+            // All good! A quick soundness check to verify that the length of the plaintext is ok.
             guard plaintext.count % Self.cipherBlockSize == 0, plaintext.count == ciphertextView.count else {
                 throw NIOSSHError.invalidDecryptedPlaintextLength
             }
@@ -170,7 +170,7 @@ extension AESGCMTransportProtection: NIOSSHTransportProtection {
 
         // We now want to overwrite the portion of the bytebuffer that contains the plaintext with the ciphertext, and then append the
         // tag.
-        outboundBuffer.setBytes(sealedBox.ciphertext, at: packetPaddingIndex)
+        outboundBuffer.setContiguousBytes(sealedBox.ciphertext, at: packetPaddingIndex)
         let tagLength = outboundBuffer.writeContiguousBytes(sealedBox.tag)
         precondition(tagLength == self.macBytes, "Unexpected short tag")
 
@@ -349,7 +349,7 @@ extension ByteBuffer {
     /// Will crash if there isn't space in the front of this buffer, so please ensure there is!
     fileprivate mutating func prependData(_ data: Data) {
         self.moveReaderIndex(to: self.readerIndex - data.count)
-        self.setBytes(data, at: self.readerIndex)
+        self.setContiguousBytes(data, at: self.readerIndex)
     }
 }
 

@@ -94,6 +94,8 @@ final class SSHConnectionStateMachineTests: XCTestCase {
                     }
                 case .some(.forwardToMultiplexer), .some(.globalRequest), .some(.globalRequestResponse), .some(.disconnect):
                     fatalError("Currently unsupported")
+                case .some(.event):
+                    ()
                 }
             }
 
@@ -120,7 +122,7 @@ final class SSHConnectionStateMachineTests: XCTestCase {
                             }
                         }
                     }
-                case .some(.forwardToMultiplexer), .some(.globalRequest), .some(.globalRequestResponse), .some(.disconnect):
+                case .some(.forwardToMultiplexer), .some(.globalRequest), .some(.globalRequestResponse), .some(.disconnect), .some(.event):
                     fatalError("Currently unsupported")
                 }
             }
@@ -144,7 +146,7 @@ final class SSHConnectionStateMachineTests: XCTestCase {
         switch result {
         case .some(.forwardToMultiplexer(let forwardedMessage)):
             XCTAssertEqual(forwardedMessage, message)
-        case .some(.emitMessage), .some(.possibleFutureMessage), .some(.noMessage), .some(.globalRequest), .some(.globalRequestResponse), .some(.disconnect), .none:
+        case .some(.emitMessage), .some(.possibleFutureMessage), .some(.noMessage), .some(.globalRequest), .some(.globalRequestResponse), .some(.disconnect), .some(.event), .none:
             XCTFail("Unexpected result: \(String(describing: result))")
         }
     }
@@ -169,7 +171,7 @@ final class SSHConnectionStateMachineTests: XCTestCase {
         case .some(.disconnect):
             // Good
             break
-        case .some(.forwardToMultiplexer), .some(.emitMessage), .some(.possibleFutureMessage), .some(.noMessage), .some(.globalRequest), .some(.globalRequestResponse), .none:
+        case .some(.forwardToMultiplexer), .some(.emitMessage), .some(.possibleFutureMessage), .some(.noMessage), .some(.globalRequest), .some(.globalRequestResponse), .some(.event), .none:
             XCTFail("Unexpected result: \(String(describing: result))")
         }
     }
@@ -186,7 +188,7 @@ final class SSHConnectionStateMachineTests: XCTestCase {
         case .some(.globalRequest(let receivedMessage)):
             // Good
             XCTAssertEqual(.globalRequest(receivedMessage), message)
-        case .some(.forwardToMultiplexer), .some(.emitMessage), .some(.possibleFutureMessage), .some(.noMessage), .some(.globalRequestResponse), .some(.disconnect), .none:
+        case .some(.forwardToMultiplexer), .some(.emitMessage), .some(.possibleFutureMessage), .some(.noMessage), .some(.globalRequestResponse), .some(.disconnect), .some(.event), .none:
             XCTFail("Unexpected result: \(String(describing: result))")
         }
     }
@@ -203,7 +205,7 @@ final class SSHConnectionStateMachineTests: XCTestCase {
         case .some(.globalRequestResponse(let response)):
             // Good
             return response
-        case .some(.forwardToMultiplexer), .some(.emitMessage), .some(.possibleFutureMessage), .some(.noMessage), .some(.globalRequest), .some(.disconnect), .none:
+        case .some(.forwardToMultiplexer), .some(.emitMessage), .some(.possibleFutureMessage), .some(.noMessage), .some(.globalRequest), .some(.disconnect), .some(.event), .none:
             XCTFail("Unexpected result: \(String(describing: result))")
             return nil
         }
@@ -221,7 +223,7 @@ final class SSHConnectionStateMachineTests: XCTestCase {
         case .some(.noMessage):
             // Good
             break
-        case .some(.forwardToMultiplexer), .some(.emitMessage), .some(.possibleFutureMessage), .some(.globalRequest), .some(.globalRequestResponse), .some(.disconnect), .none:
+        case .some(.forwardToMultiplexer), .some(.emitMessage), .some(.possibleFutureMessage), .some(.globalRequest), .some(.globalRequestResponse), .some(.disconnect), .some(.event), .none:
             XCTFail("Unexpected result: \(String(describing: result))")
         }
     }
@@ -423,6 +425,92 @@ final class SSHConnectionStateMachineTests: XCTestCase {
         XCTAssertNoThrow(try client.processOutboundMessage(SSHMessage.version(Constants.version), buffer: &buffer, allocator: allocator, loop: loop))
 
         XCTAssertNil(client.start())
+    }
+
+    func testClientToleratesLinesBeforeVersion() throws {
+        let allocator = ByteBufferAllocator()
+        let loop = EmbeddedEventLoop()
+        var client = SSHConnectionStateMachine(role: .client(.init(userAuthDelegate: InfinitePasswordDelegate(), serverAuthDelegate: AcceptAllHostKeysDelegate())))
+
+        let message = client.start()
+        guard case message = Optional.some(SSHMultiMessage(SSHMessage.version(Constants.version))) else {
+            XCTFail("Unexpected message")
+            return
+        }
+
+        var buffer = allocator.buffer(capacity: 42)
+        XCTAssertNoThrow(try client.processOutboundMessage(SSHMessage.version(Constants.version), buffer: &buffer, allocator: allocator, loop: loop))
+
+        var version = ByteBuffer(string: "xxxx\nyyy\nSSH-2.0-OpenSSH_8.1\r\n")
+        client.bufferInboundData(&version)
+
+        XCTAssertNoThrow(try client.processInboundMessage(allocator: allocator, loop: loop))
+    }
+
+    func testServerRejectsLinesBeforeVersion() throws {
+        let allocator = ByteBufferAllocator()
+        let loop = EmbeddedEventLoop()
+        var server = SSHConnectionStateMachine(role: .server(.init(hostKeys: [NIOSSHPrivateKey(ed25519Key: .init())], userAuthDelegate: DenyThenAcceptDelegate(messagesToDeny: 1))))
+
+        let message = server.start()
+        guard case message = Optional.some(SSHMultiMessage(SSHMessage.version(Constants.version))) else {
+            XCTFail("Unexpected message")
+            return
+        }
+
+        var buffer = allocator.buffer(capacity: 42)
+        XCTAssertNoThrow(try server.processOutboundMessage(SSHMessage.version(Constants.version), buffer: &buffer, allocator: allocator, loop: loop))
+
+        var version = ByteBuffer(string: "xxxx\nyyy\nSSH-2.0-OpenSSH_8.1\r\n")
+        server.bufferInboundData(&version)
+
+        XCTAssertThrowsError(try server.processInboundMessage(allocator: allocator, loop: loop)) { error in
+            XCTAssertEqual((error as? NIOSSHError)?.type, .protocolViolation)
+        }
+    }
+
+    func testClintVersionNotFound() throws {
+        let allocator = ByteBufferAllocator()
+        let loop = EmbeddedEventLoop()
+        var client = SSHConnectionStateMachine(role: .client(.init(userAuthDelegate: InfinitePasswordDelegate(), serverAuthDelegate: AcceptAllHostKeysDelegate())))
+
+        let message = client.start()
+        guard case message = Optional.some(SSHMultiMessage(SSHMessage.version(Constants.version))) else {
+            XCTFail("Unexpected message")
+            return
+        }
+
+        var buffer = allocator.buffer(capacity: 42)
+        XCTAssertNoThrow(try client.processOutboundMessage(SSHMessage.version(Constants.version), buffer: &buffer, allocator: allocator, loop: loop))
+
+        var version = ByteBuffer(string: "SSH-\r\n")
+        client.bufferInboundData(&version)
+
+        XCTAssertThrowsError(try client.processInboundMessage(allocator: allocator, loop: loop)) { error in
+            XCTAssertEqual((error as? NIOSSHError)?.type, .protocolViolation)
+        }
+    }
+
+    func testVersionNotSupported() throws {
+        let allocator = ByteBufferAllocator()
+        let loop = EmbeddedEventLoop()
+        var client = SSHConnectionStateMachine(role: .client(.init(userAuthDelegate: InfinitePasswordDelegate(), serverAuthDelegate: AcceptAllHostKeysDelegate())))
+
+        let message = client.start()
+        guard case message = Optional.some(SSHMultiMessage(SSHMessage.version(Constants.version))) else {
+            XCTFail("Unexpected message")
+            return
+        }
+
+        var buffer = allocator.buffer(capacity: 42)
+        XCTAssertNoThrow(try client.processOutboundMessage(SSHMessage.version(Constants.version), buffer: &buffer, allocator: allocator, loop: loop))
+
+        var version = ByteBuffer(string: "SSH-1.0-OpenSSH_8.1\r\n")
+        client.bufferInboundData(&version)
+
+        XCTAssertThrowsError(try client.processInboundMessage(allocator: allocator, loop: loop)) { error in
+            XCTAssertEqual((error as? NIOSSHError)?.type, .unsupportedVersion)
+        }
     }
 }
 
